@@ -2222,6 +2222,7 @@ export const en: TranslationMap = {
     placeholder: "Message OpenClaw…",
     sensitivePlaceholder: "Enter sensitive value…",
     sensitiveReply: "Sensitive reply sent",
+    cancel: "Cancel",
     send: "Send",
     thinking: "OpenClaw is thinking",
     earlier: "Earlier",
