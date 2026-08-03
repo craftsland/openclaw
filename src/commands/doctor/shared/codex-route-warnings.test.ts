@@ -348,7 +348,7 @@ describe("collectCodexRouteWarnings", () => {
     expect(result.cfg.agents?.list?.[0]?.models?.["openai-codex/gpt-5.4"]).toBeUndefined();
   });
 
-  it("warns when Codex app-server command includes inline arguments", () => {
+  it("warns without executing a custom Codex app-server command", () => {
     const warnings = collectCodexRouteWarnings({
       plugins: {
         entries: {
@@ -367,11 +367,136 @@ describe("collectCodexRouteWarnings", () => {
 
     expect(warnings).toStrictEqual([
       [
-        "- Codex app-server command override includes inline arguments.",
-        '- plugins.entries.codex.config.appServer.command: "node C:\\Users\\me\\.openclaw\\npm\\node_modules\\@openai\\codex\\bin\\codex.js" starts with "node" and embeds "C:\\Users\\me\\.openclaw\\npm\\node_modules\\@openai\\codex\\bin\\codex.js". The command field must be only the executable path.',
-        "- Remove the override to use managed Codex startup, or move script/options to plugins.entries.codex.config.appServer.args.",
+        "- Custom Codex app-server command bypasses OpenClaw's managed exact-version binary.",
+        "- plugins.entries.codex.config.appServer.command: Doctor did not execute, inspect, or rewrite this command.",
+        "- Remove the override to use managed Codex startup, or verify the custom binary matches the Codex version bundled with this OpenClaw release.",
       ].join("\n"),
     ]);
+  });
+
+  it("repairs only redundant native Codex service tiers and is idempotent", () => {
+    const command = "node -e process.exit(99)";
+    const original = {
+      plugins: { entries: { codex: { enabled: true, config: { appServer: { command } } } } },
+      agents: {
+        defaults: {
+          models: {
+            "openai/gpt-5.6-sol": {
+              params: { fastMode: true, serviceTier: "priority" },
+              agentRuntime: { id: "codex" },
+            },
+            "openai/gpt-5.6-terra": {
+              params: { fast_mode: "on", service_tier: "PRIORITY" },
+              agentRuntime: { id: "codex" },
+            },
+          },
+        },
+      },
+    };
+
+    const repaired = maybeRepairCodexRoutes(original);
+
+    expect(repaired.changes).toStrictEqual([
+      "Removed redundant agents.defaults.models.openai/gpt-5.6-sol.params.serviceTier; fastMode already selects native priority.",
+      "Removed redundant agents.defaults.models.openai/gpt-5.6-terra.params.service_tier; fastMode already selects native priority.",
+    ]);
+    expect(repaired.cfg.agents?.defaults?.models).toEqual({
+      "openai/gpt-5.6-sol": {
+        params: { fastMode: true },
+        agentRuntime: { id: "codex" },
+      },
+      "openai/gpt-5.6-terra": {
+        params: { fast_mode: "on" },
+        agentRuntime: { id: "codex" },
+      },
+    });
+    expect(repaired.cfg.plugins?.entries?.codex?.config).toEqual({
+      appServer: { command },
+    });
+    expect(repaired.warnings).toStrictEqual([
+      [
+        "- Custom Codex app-server command bypasses OpenClaw's managed exact-version binary.",
+        "- plugins.entries.codex.config.appServer.command: Doctor did not execute, inspect, or rewrite this command.",
+        "- Remove the override to use managed Codex startup, or verify the custom binary matches the Codex version bundled with this OpenClaw release.",
+      ].join("\n"),
+    ]);
+    expect(original.agents.defaults.models["openai/gpt-5.6-sol"].params).toHaveProperty(
+      "serviceTier",
+    );
+
+    const second = maybeRepairCodexRoutes(repaired.cfg);
+    expect(second.cfg).toBe(repaired.cfg);
+    expect(second.changes).toStrictEqual([]);
+    expect(second.warnings).toStrictEqual(repaired.warnings);
+  });
+
+  it("preserves and warns about non-lossless native Codex params", () => {
+    const original = {
+      agents: {
+        defaults: {
+          models: {
+            "openai/gpt-5.6-sol": {
+              params: {
+                fastMode: true,
+                fast_mode: false,
+                serviceTier: "priority",
+                temperature: 0.2,
+              },
+              agentRuntime: { id: "codex" },
+            },
+            "openai/gpt-5.6-terra": {
+              params: { fastMode: true, serviceTier: "priority", service_tier: "flex" },
+              agentRuntime: { id: "codex" },
+            },
+            "openai/gpt-5.6-openclaw": {
+              params: { fastMode: true, serviceTier: "priority" },
+              agentRuntime: { id: "openclaw" },
+            },
+          },
+        },
+      },
+    };
+
+    const result = maybeRepairCodexRoutes(original);
+
+    expect(result.cfg).toBe(original);
+    expect(result.changes).toStrictEqual([]);
+    expect(result.warnings.join("\n")).toContain(
+      "agents.defaults.models.openai/gpt-5.6-sol.params.serviceTier",
+    );
+    expect(result.warnings.join("\n")).toContain(
+      "agents.defaults.models.openai/gpt-5.6-sol.params.temperature",
+    );
+    expect(result.warnings.join("\n")).toContain(
+      "agents.defaults.models.openai/gpt-5.6-terra.params.serviceTier",
+    );
+    expect(result.warnings.join("\n")).toContain(
+      "agents.defaults.models.openai/gpt-5.6-terra.params.service_tier",
+    );
+    expect(result.warnings.join("\n")).not.toContain("gpt-5.6-openclaw.params.serviceTier");
+  });
+
+  it("removes a redundant tier while preserving other authored params for review", () => {
+    const result = maybeRepairCodexRoutes({
+      agents: {
+        defaults: {
+          models: {
+            "openai/gpt-5.6-sol": {
+              params: { fastMode: true, serviceTier: "priority", temperature: 0.2 },
+              agentRuntime: { id: "codex" },
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.cfg.agents?.defaults?.models?.["openai/gpt-5.6-sol"]?.params).toEqual({
+      fastMode: true,
+      temperature: 0.2,
+    });
+    expect(result.warnings.join("\n")).toContain(
+      "agents.defaults.models.openai/gpt-5.6-sol.params.temperature",
+    );
   });
 
   it("warns when Codex runtime routes are configured while the Codex plugin is disabled", () => {
