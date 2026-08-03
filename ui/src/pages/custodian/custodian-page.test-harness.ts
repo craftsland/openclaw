@@ -26,6 +26,7 @@ type TestCustodianPage = HTMLElement & {
 type ContextHarness = {
   context: ApplicationContext;
   setGatewaySnapshot: (patch: Partial<ApplicationGatewaySnapshot>) => void;
+  setRecoveryScopeReady: (ready: boolean) => void;
   setGatewayToken: (token: string) => void;
   setChannelsConnected: (connected: boolean) => void;
   setChannelsSnapshot: (snapshot: ChannelsStatusSnapshot | null) => void;
@@ -39,13 +40,13 @@ export function createContext(
     agentsList?: ApplicationContext["agents"]["state"]["agentsList"];
     channelsSnapshot?: ChannelsStatusSnapshot | null;
     recoveryScope?: string;
+    recoveryScopeReady?: boolean;
   } = {},
 ): ContextHarness {
   const client = {
     request,
-    ...(options.recoveryScope
-      ? { recoveryScope: options.recoveryScope, recoveryScopeReady: true }
-      : {}),
+    recoveryScope: options.recoveryScope ?? "",
+    recoveryScopeReady: options.recoveryScopeReady ?? true,
   } as unknown as GatewayBrowserClient;
   let snapshot: ApplicationGatewaySnapshot = {
     client,
@@ -140,7 +141,17 @@ export function createContext(
   return {
     context,
     setGatewaySnapshot: (patch) => {
+      if (patch.client && patch.client.recoveryScopeReady === undefined) {
+        Object.assign(patch.client, { recoveryScope: "", recoveryScopeReady: true });
+      }
       snapshot = { ...snapshot, ...patch };
+      for (const listener of listeners) {
+        listener(snapshot);
+      }
+    },
+    setRecoveryScopeReady: (ready) => {
+      client.recoveryScopeReady = ready;
+      snapshot = { ...snapshot };
       for (const listener of listeners) {
         listener(snapshot);
       }

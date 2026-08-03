@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearCustodianRecoveryForClient,
   readCustodianRecoveryForClient,
@@ -27,7 +27,11 @@ function remember(sessionId: string): void {
 }
 
 describe("Custodian wizard reload recovery", () => {
-  afterEach(() => sessionStorage.clear());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    sessionStorage.clear();
+  });
 
   it("stores only the active session handle in tab-scoped storage", () => {
     remember("custodian-live");
@@ -54,5 +58,18 @@ describe("Custodian wizard reload recovery", () => {
     expect(readCustodianRecoveryForClient(client, gatewayUrl)).not.toBeNull();
     clearCustodianRecoveryForClient(client, gatewayUrl, "custodian-live");
     expect(readCustodianRecoveryForClient(client, gatewayUrl)).toBeNull();
+  });
+
+  it("degrades cleanly when session storage access is denied", () => {
+    const getItem = vi.fn(() => {
+      throw new Error("storage denied");
+    });
+    const removeItem = vi.fn(() => {
+      throw new Error("storage denied");
+    });
+    vi.stubGlobal("sessionStorage", { getItem, removeItem });
+
+    expect(() => readCustodianRecoveryForClient(client, gatewayUrl)).not.toThrow();
+    expect(getItem).toHaveBeenCalledOnce();
   });
 });

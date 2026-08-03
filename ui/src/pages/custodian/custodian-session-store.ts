@@ -73,6 +73,7 @@ export class CustodianSessionStore extends CustodianTranscriptState {
   private sessionOwnershipKey: string | null = null;
   private sessionStarted = false;
   private lastHelloDeviceToken = "";
+  private recoveryScopeReady = false;
   private configuredInferenceState: ConfiguredInferenceState = "unresolved";
   private eventNudgeClosed = false;
   private gatewayCleanup: (() => void) | null = null;
@@ -438,6 +439,8 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     }
     const snapshot = context.gateway.snapshot;
     const client = snapshot.phase === "connected" ? snapshot.client : null;
+    const recoveryScopeReady = client?.recoveryScopeReady === true;
+    const recoveryScopeReadinessChanged = recoveryScopeReady !== this.recoveryScopeReady;
     const chatSupported =
       client !== null && isGatewayMethodAdvertised(snapshot, "openclaw.chat") === true;
     const configuredInferenceState = this.resolveConfiguredInferenceState();
@@ -458,13 +461,15 @@ export class CustodianSessionStore extends CustodianTranscriptState {
       !clientReplaced &&
       !ownershipChanged &&
       this.chatAvailable === (chatSupported && configuredInferenceState !== "unresolved") &&
-      !inferenceStateChanged
+      !inferenceStateChanged &&
+      !recoveryScopeReadinessChanged
     ) {
       return;
     }
     const requestWasPending = this.sending && this.retryParams !== null;
     const pendingParams = requestWasPending ? this.retryParams : null;
     this.activeClient = client;
+    this.recoveryScopeReady = recoveryScopeReady;
     this.requestEpoch += 1;
     this.sending = false;
     this.chatAvailable = false;
@@ -515,6 +520,9 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     }
     if (inferenceStateChanged) {
       this.setupIssue = null;
+    }
+    if (!client.recoveryScopeReady) {
+      return;
     }
     if (this.sessionStarted) {
       if (!this.retryParams) {

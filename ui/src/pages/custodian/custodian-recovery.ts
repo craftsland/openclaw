@@ -86,7 +86,7 @@ function readCustodianRecovery(
     }
     return { sessionId: value.sessionId };
   } catch {
-    globalThis.sessionStorage?.removeItem(key);
+    // Storage access can be denied entirely, including cleanup attempts.
     return null;
   }
 }
