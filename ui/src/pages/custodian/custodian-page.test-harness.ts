@@ -27,6 +27,7 @@ type ContextHarness = {
   context: ApplicationContext;
   setGatewaySnapshot: (patch: Partial<ApplicationGatewaySnapshot>) => void;
   setRecoveryScopeReady: (ready: boolean) => void;
+  setGatewayUrl: (gatewayUrl: string) => void;
   setGatewayToken: (token: string) => void;
   setChannelsConnected: (connected: boolean) => void;
   setChannelsSnapshot: (snapshot: ChannelsStatusSnapshot | null) => void;
@@ -155,6 +156,9 @@ export function createContext(
       for (const listener of listeners) {
         listener(snapshot);
       }
+    },
+    setGatewayUrl: (gatewayUrl) => {
+      connection.gatewayUrl = gatewayUrl;
     },
     setGatewayToken: (value) => {
       const credentials = { token: value };

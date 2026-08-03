@@ -87,18 +87,14 @@ function toCustodianMessageGroup(message: CustodianMessage): MessageGroup {
 async function readCustodianTranscript(
   client: GatewayBrowserClient,
   sessionId?: string,
-): Promise<SystemAgentChatHistoryResult | null> {
-  try {
-    return await client.request<SystemAgentChatHistoryResult>(
-      "openclaw.chat.history",
-      sessionId ? { sessionId } : {},
-      {
-        timeoutMs: CUSTODIAN_TRANSCRIPT_TIMEOUT_MS,
-      },
-    );
-  } catch {
-    return null;
-  }
+): Promise<SystemAgentChatHistoryResult> {
+  return await client.request<SystemAgentChatHistoryResult>(
+    "openclaw.chat.history",
+    sessionId ? { sessionId } : {},
+    {
+      timeoutMs: CUSTODIAN_TRANSCRIPT_TIMEOUT_MS,
+    },
+  );
 }
 
 /**
@@ -139,11 +135,8 @@ export async function loadCustodianTranscriptSnapshot(
   client: GatewayBrowserClient,
   firstMessageId: number,
   sessionId?: string,
-): Promise<CustodianTranscriptSnapshot | null> {
+): Promise<CustodianTranscriptSnapshot> {
   const history = await readCustodianTranscript(client, sessionId);
-  if (!history) {
-    return null;
-  }
   const transcript = createCustodianTranscriptMessages(history.turns, firstMessageId);
   const earlierBoundaryAfterId = transcript.messages.at(-1)?.id ?? null;
   const activeWizard = history.activeWizard;

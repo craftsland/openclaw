@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
 import { createContext, mountPage } from "./custodian-page.test-harness.ts";
 import {
@@ -163,5 +164,157 @@ describe("Custodian wizard reload recovery", () => {
     });
     expect(recoveredInput.value).toBe("");
     expect(request.mock.calls.map(([method]) => method)).toEqual(["openclaw.chat.history"]);
+  });
+
+  it("keeps a live recovery handle when its history lookup is temporarily unavailable", async () => {
+    reconcileCustodianRecoveryForClient(
+      recoveryClient,
+      gatewayUrl,
+      {
+        sessionId: "retryable-wizard",
+        reply: "Enter the secret.",
+        action: "none",
+        wizardInputPending: true,
+        step: {
+          id: "secret",
+          type: "text",
+          message: "Twitch client secret",
+          sensitive: true,
+        },
+      },
+      "retryable-wizard",
+    );
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary history failure"))
+      .mockResolvedValueOnce({
+        turns: [{ role: "assistant", text: "Enter the secret.", at: 1 }],
+        activeWizard: {
+          sessionId: "retryable-wizard",
+          step: {
+            id: "secret",
+            type: "text",
+            message: "Twitch client secret",
+            sensitive: true,
+          },
+        },
+      });
+    const { context } = createContext(request, ["openclaw.chat", "openclaw.chat.history"], {
+      recoveryScope,
+    });
+    const { page } = await mountPage(context);
+
+    const retry = await waitForFast(() => {
+      const button = page.querySelector<HTMLButtonElement>('[role="alert"] button');
+      expect(button).not.toBeNull();
+      return button!;
+    });
+    expect(request.mock.calls.map(([method]) => method)).toEqual(["openclaw.chat.history"]);
+    expect(readCustodianRecoveryForClient(recoveryClient, gatewayUrl)).toEqual({
+      sessionId: "retryable-wizard",
+    });
+
+    retry.click();
+    await waitForFast(() =>
+      expect(page.querySelector('.custodian__wizard-step input[type="password"]')).not.toBeNull(),
+    );
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "openclaw.chat.history",
+      "openclaw.chat.history",
+    ]);
+  });
+
+  it("waits for a replacement client's recovery scope before rotating the session", async () => {
+    const request = vi.fn(async (method: string) =>
+      method === "openclaw.chat.history"
+        ? { turns: [] }
+        : {
+            sessionId: "replacement-source-wizard",
+            reply: "Enter the secret.",
+            action: "none",
+            wizardInputPending: true,
+            step: {
+              id: "secret",
+              type: "text",
+              message: "Twitch client secret",
+              sensitive: true,
+            },
+          },
+    );
+    const replacementRequest = vi.fn().mockResolvedValue({
+      sessionId: "replacement-fresh-session",
+      reply: "Fresh session ready.",
+      action: "none",
+    });
+    const replacementClient = {
+      request: replacementRequest,
+      recoveryScope,
+      recoveryScopeReady: false,
+    };
+    const harness = createContext(request, ["openclaw.chat", "openclaw.chat.history"], {
+      recoveryScope,
+    });
+    const { page } = await mountPage(harness.context);
+    await waitForFast(() => expect(request).toHaveBeenCalled());
+    await waitForFast(() =>
+      expect(readCustodianRecoveryForClient(recoveryClient, gatewayUrl)).toEqual({
+        sessionId: "replacement-source-wizard",
+      }),
+    );
+
+    harness.setGatewaySnapshot({ client: replacementClient as unknown as GatewayBrowserClient });
+    await Promise.resolve();
+    expect(replacementRequest).not.toHaveBeenCalled();
+
+    replacementClient.recoveryScopeReady = true;
+    harness.setGatewaySnapshot({ client: replacementClient as unknown as GatewayBrowserClient });
+    await waitForFast(() => expect(page.textContent).toContain("Fresh session ready."));
+    expect(replacementRequest.mock.calls.map(([method]) => method)).toEqual(["openclaw.chat"]);
+    expect(readCustodianRecoveryForClient(recoveryClient, gatewayUrl)).toBeNull();
+  });
+
+  it("clears the old gateway recovery key when the connection URL changes", async () => {
+    const request = vi.fn(async (method: string) =>
+      method === "openclaw.chat.history"
+        ? { turns: [] }
+        : {
+            sessionId: "old-gateway-wizard",
+            reply: "Enter the secret.",
+            action: "none",
+            wizardInputPending: true,
+            step: {
+              id: "secret",
+              type: "text",
+              message: "Twitch client secret",
+              sensitive: true,
+            },
+          },
+    );
+    const replacementRequest = vi.fn(async (method: string) =>
+      method === "openclaw.chat.history"
+        ? { turns: [] }
+        : { sessionId: "new-gateway-session", reply: "New gateway ready.", action: "none" },
+    );
+    const harness = createContext(request, ["openclaw.chat", "openclaw.chat.history"], {
+      recoveryScope,
+    });
+    await mountPage(harness.context);
+    await waitForFast(() =>
+      expect(readCustodianRecoveryForClient(recoveryClient, gatewayUrl)).toEqual({
+        sessionId: "old-gateway-wizard",
+      }),
+    );
+
+    harness.setGatewayUrl("ws://other-gateway.test/control");
+    harness.setGatewaySnapshot({
+      client: {
+        request: replacementRequest,
+        recoveryScope,
+        recoveryScopeReady: true,
+      } as unknown as GatewayBrowserClient,
+    });
+    await waitForFast(() => expect(replacementRequest).toHaveBeenCalledTimes(2));
+
+    expect(readCustodianRecoveryForClient(recoveryClient, gatewayUrl)).toBeNull();
   });
 });

@@ -48,6 +48,7 @@ function hasCustodianUserInput(params: SystemAgentChatParams): boolean {
 type StoreListener = () => void;
 type ConfiguredInferenceState = "unresolved" | "required" | "ready";
 type CustodianSetupIssue = "missing" | "unavailable";
+type CustodianTranscriptHistoryOutcome = "recovered" | "inactive" | "unavailable";
 
 /** One process-local conversation owner shared by the full page and dock surface. */
 export class CustodianSessionStore extends CustodianTranscriptState {
@@ -70,6 +71,7 @@ export class CustodianSessionStore extends CustodianTranscriptState {
   private requestEpoch = 0;
   private retryParams: SystemAgentChatParams | null = null;
   private sessionClient: GatewayBrowserClient | null = null;
+  private sessionGatewayUrl: string | null = null;
   private sessionOwnershipKey: string | null = null;
   private sessionStarted = false;
   private lastHelloDeviceToken = "";
@@ -167,7 +169,10 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     const client = this.activeClient;
     const params = this.retryParams;
     if (client && params && !hasCustodianUserInput(params) && this.chatAvailable && !this.sending) {
-      void this.initializeSession(client, params);
+      const gatewayUrl = this.context?.gateway.connection.gatewayUrl ?? "";
+      const recoveryPending =
+        readCustodianRecoveryForClient(client, gatewayUrl)?.sessionId === params.sessionId;
+      void this.initializeSession(client, params, true, recoveryPending);
     }
   }
 
@@ -375,6 +380,7 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     this.sessionId = recovery?.sessionId ?? createCustodianSessionId();
     this.sessionVariant = variant;
     this.sessionClient = client;
+    this.sessionGatewayUrl = gatewayUrl;
     this.sessionOwnershipKey = this.currentSessionOwnershipKey();
     this.sessionStarted = true;
     void this.initializeSession(
@@ -385,12 +391,19 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     );
   }
 
-  private clearRecovery(client: GatewayBrowserClient, expectedSessionId?: string): void {
-    clearCustodianRecoveryForClient(
-      client,
-      this.context?.gateway.connection.gatewayUrl ?? "",
-      expectedSessionId,
-    );
+  private clearRecovery(
+    client: GatewayBrowserClient,
+    expectedSessionId?: string,
+    gatewayUrl = this.context?.gateway.connection.gatewayUrl ?? "",
+  ): void {
+    clearCustodianRecoveryForClient(client, gatewayUrl, expectedSessionId);
+  }
+
+  private clearSessionRecovery(expectedSessionId = this.sessionId): void {
+    if (!this.sessionClient || this.sessionGatewayUrl === null) {
+      return;
+    }
+    this.clearRecovery(this.sessionClient, expectedSessionId, this.sessionGatewayUrl);
   }
 
   private reconcileRecovery(
@@ -419,7 +432,7 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     client: GatewayBrowserClient,
     variant: CustodianSessionVariant,
   ): void {
-    this.clearRecovery(client, this.sessionId);
+    this.clearSessionRecovery();
     this.answeredQuestions = retireCustodianQuestions(this.messages, this.answeredQuestions);
     this.retryParams = null;
     this.input = "";
@@ -478,12 +491,14 @@ export class CustodianSessionStore extends CustodianTranscriptState {
       [this.eventNudge, this.eventNudgePending] = [null, null];
       this.eventNudgeClosed = false;
       this.abandonedTurnOutcomeUnknown = false;
-      if (this.sessionClient) {
-        this.clearRecovery(this.sessionClient, this.sessionId);
-      }
+      this.clearSessionRecovery();
       this.sessionStarted = false;
       this.clearConversation();
     } else if (client && clientReplaced) {
+      if (!recoveryScopeReady) {
+        this.abandonPendingUserTurn(pendingParams);
+        return;
+      }
       if (!chatSupported) {
         this.sessionStarted = false;
         this.abandonPendingUserTurn(pendingParams);
@@ -512,7 +527,7 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     }
     this.chatAvailable = true;
     if (configuredInferenceState === "required") {
-      this.clearRecovery(client, this.sessionId);
+      this.clearSessionRecovery();
       this.sessionStarted = false;
       this.clearConversation();
       this.setupIssue = "missing";
@@ -570,9 +585,9 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     this.error = null;
     this.retryParams = params;
     this.emit();
-    let recovered = false;
+    let historyOutcome: CustodianTranscriptHistoryOutcome = "inactive";
     if (loadTranscript) {
-      recovered = await this.refreshTranscriptHistory(
+      historyOutcome = await this.refreshTranscriptHistory(
         client,
         epoch,
         recoveryPending ? params.sessionId : undefined,
@@ -581,15 +596,21 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     if (epoch !== this.requestEpoch || client !== this.activeClient) {
       return;
     }
-    if (recovered) {
+    if (historyOutcome === "recovered") {
       this.sending = false;
       this.retryParams = null;
       this.emit();
       return;
     }
+    if (recoveryPending && historyOutcome === "unavailable") {
+      this.sending = false;
+      this.error = t("custodian.requestFailed");
+      this.emit();
+      return;
+    }
     let requestParams = params;
     if (recoveryPending) {
-      this.clearRecovery(client, params.sessionId);
+      this.clearSessionRecovery(params.sessionId);
       this.sessionId = createCustodianSessionId();
       requestParams = { ...params, sessionId: this.sessionId };
       this.retryParams = requestParams;
@@ -601,21 +622,26 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     client: GatewayBrowserClient,
     epoch: number,
     sessionId?: string,
-  ): Promise<boolean> {
+  ): Promise<CustodianTranscriptHistoryOutcome> {
     const context = this.context;
     if (
       !context ||
       isGatewayMethodAdvertised(context.gateway.snapshot, "openclaw.chat.history") !== true
     ) {
-      return false;
+      return "inactive";
     }
-    const transcript = await loadCustodianTranscriptSnapshot(client, this.nextMessageId, sessionId);
-    if (transcript === null || epoch !== this.requestEpoch || client !== this.activeClient) {
-      return false;
+    let transcript;
+    try {
+      transcript = await loadCustodianTranscriptSnapshot(client, this.nextMessageId, sessionId);
+    } catch {
+      return "unavailable";
+    }
+    if (epoch !== this.requestEpoch || client !== this.activeClient) {
+      return "inactive";
     }
     const recovered = this.applyTranscriptSnapshot(transcript, sessionId);
     this.emit();
-    return recovered;
+    return recovered ? "recovered" : "inactive";
   }
 
   private clearConversation(): void {
