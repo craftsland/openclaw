@@ -6,7 +6,6 @@ import {
   ErrorCodes,
   errorShape,
   validateSystemAgentChatParams,
-  validateSystemAgentChatHistoryParams,
   validateSystemAgentSetupActivateParams,
   validateSystemAgentSetupAuthStartParams,
   validateSystemAgentSetupDetectParams,
@@ -27,7 +26,6 @@ import {
   SystemAgentChatEngine,
   SystemAgentWizardAnswerError,
 } from "../../system-agent/chat-engine.js";
-import { resolveSystemAgentDelegationKey } from "../../system-agent/delegation-session.js";
 import {
   acknowledgeSystemAgentGreetingDelivery,
   buildSystemAgentGreetingQuestion,
@@ -50,13 +48,17 @@ import {
   handlePendingApprovalRequest,
   listVisiblePendingApprovalRequests,
 } from "./approval-shared.js";
+import {
+  resolveSystemAgentSessionOwnerKey,
+  systemAgentChatHistoryHandler,
+} from "./system-agent-chat-history.js";
 import { sanitizeSystemAgentChatParams } from "./system-agent-chat-params.js";
 import {
   buildSystemAgentChatResult,
   getSystemAgentChatInputError,
   runSystemAgentChatInput,
 } from "./system-agent-chat-turn.js";
-import type { GatewayClient, GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
+import type { GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 /**
@@ -74,7 +76,6 @@ export type SystemAgentChatSession =
 
 const MAX_SYSTEM_AGENT_SESSIONS = 8;
 const SYSTEM_AGENT_SEED_HISTORY_LIMIT = 30;
-const DEFAULT_SYSTEM_AGENT_HISTORY_LIMIT = 100;
 const PROVIDER_AUTH_SESSION_TIMEOUT_MS = 25 * 60 * 1000;
 const PROVIDER_PREPARE_SESSION_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const SYSTEM_AGENT_GATEWAY_EXECUTION_KEY = "gateway";
@@ -114,30 +115,6 @@ async function runSystemAgentGatewayTask<T>(task: () => Promise<T>): Promise<T> 
     // setup writes atomic with respect to other OpenClaw gateway requests.
     systemAgentGatewayExecutionQueue.enqueue(SYSTEM_AGENT_GATEWAY_EXECUTION_KEY, task),
   );
-}
-
-function resolveSystemAgentSessionOwnerKey(params: {
-  delegation?: { agentId?: string; sessionKey?: string };
-  client: GatewayClient | null;
-}): string | undefined {
-  const delegationKey = resolveSystemAgentDelegationKey(params.delegation);
-  if (delegationKey !== undefined) {
-    // Delegation is the host-only, cross-connection owner asserted by the regular-agent
-    // tool path. Keep its agent/session tuple authoritative across gateway reconnects.
-    return delegationKey;
-  }
-  // Authenticated users survive reconnects and may span paired devices. Otherwise
-  // bind to the verified device, with the server-issued connection as a last resort.
-  const userId = params.client?.authenticatedUserId?.trim();
-  if (userId) {
-    return `user:${userId}`;
-  }
-  const deviceId = params.client?.connect.device?.id.trim();
-  if (deviceId) {
-    return `device:${deviceId}`;
-  }
-  const connId = params.client?.connId?.trim();
-  return connId ? `connection:${connId}` : undefined;
 }
 
 let systemAgentSetupActivationInProgress = false;
@@ -273,23 +250,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
       undefined,
     );
   },
-  "openclaw.chat.history": ({ params, respond }) => {
-    if (
-      !assertValidParams(
-        params,
-        validateSystemAgentChatHistoryParams,
-        "openclaw.chat.history",
-        respond,
-      )
-    ) {
-      return;
-    }
-    respond(
-      true,
-      { turns: readTranscriptTail(params.limit ?? DEFAULT_SYSTEM_AGENT_HISTORY_LIMIT) },
-      undefined,
-    );
-  },
+  "openclaw.chat.history": systemAgentChatHistoryHandler,
   /** Structured onboarding: list reusable AI access on this host. */
   "openclaw.setup.detect": async ({ params, respond }) => {
     if (

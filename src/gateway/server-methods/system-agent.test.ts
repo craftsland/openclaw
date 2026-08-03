@@ -783,9 +783,18 @@ describe("openclaw.chat", () => {
     transcriptStoreMocks.readTranscriptTail.mockImplementation((limit: number) =>
       turns.slice(-limit),
     );
-    const invoke = async (params: Record<string, unknown>) => {
+    const invoke = async (
+      params: Record<string, unknown>,
+      context = makeContext(new Map()),
+      client = defaultClient,
+    ) => {
       const { calls, respond } = makeRespond();
-      await systemAgentHandler("openclaw.chat.history")({ params, respond } as never);
+      await systemAgentHandler("openclaw.chat.history")({
+        params,
+        respond,
+        context,
+        client,
+      } as never);
       return calls[0];
     };
 

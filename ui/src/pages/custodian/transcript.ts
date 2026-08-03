@@ -84,19 +84,18 @@ function toCustodianMessageGroup(message: CustodianMessage): MessageGroup {
   };
 }
 
-export async function readCustodianTranscript(
+async function readCustodianTranscript(
   client: GatewayBrowserClient,
-): Promise<SystemAgentChatHistoryResult["turns"] | null> {
+  sessionId?: string,
+): Promise<SystemAgentChatHistoryResult | null> {
   try {
-    return (
-      await client.request<SystemAgentChatHistoryResult>(
-        "openclaw.chat.history",
-        {},
-        {
-          timeoutMs: CUSTODIAN_TRANSCRIPT_TIMEOUT_MS,
-        },
-      )
-    ).turns;
+    return await client.request<SystemAgentChatHistoryResult>(
+      "openclaw.chat.history",
+      sessionId ? { sessionId } : {},
+      {
+        timeoutMs: CUSTODIAN_TRANSCRIPT_TIMEOUT_MS,
+      },
+    );
   } catch {
     return null;
   }
@@ -110,7 +109,7 @@ export async function readCustodianTranscript(
  */
 const SERVER_SENSITIVE_MASK = "<redacted secret>";
 
-export function createCustodianTranscriptMessages(
+function createCustodianTranscriptMessages(
   turns: readonly SystemAgentChatHistoryTurn[],
   firstMessageId: number,
 ): { messages: CustodianMessage[]; nextMessageId: number } {
@@ -127,6 +126,44 @@ export function createCustodianTranscriptMessages(
     step: null,
   }));
   return { messages, nextMessageId };
+}
+
+export type CustodianTranscriptSnapshot = {
+  messages: CustodianMessage[];
+  nextMessageId: number;
+  earlierBoundaryAfterId: number | null;
+  recoveredStep?: WizardStep;
+};
+
+export async function loadCustodianTranscriptSnapshot(
+  client: GatewayBrowserClient,
+  firstMessageId: number,
+  sessionId?: string,
+): Promise<CustodianTranscriptSnapshot | null> {
+  const history = await readCustodianTranscript(client, sessionId);
+  if (!history) {
+    return null;
+  }
+  const transcript = createCustodianTranscriptMessages(history.turns, firstMessageId);
+  const earlierBoundaryAfterId = transcript.messages.at(-1)?.id ?? null;
+  const activeWizard = history.activeWizard;
+  const recoveredStep =
+    sessionId && activeWizard?.sessionId === sessionId ? activeWizard.step : null;
+  if (recoveredStep) {
+    transcript.messages.push({
+      id: transcript.nextMessageId++,
+      role: "assistant",
+      text: "",
+      at: Date.now(),
+      question: null,
+      step: recoveredStep,
+    });
+  }
+  return {
+    ...transcript,
+    earlierBoundaryAfterId,
+    ...(recoveredStep ? { recoveredStep } : {}),
+  };
 }
 
 function renderCustodianEarlierDivider(message: CustodianMessage, boundaryAfterId: number | null) {

@@ -38,9 +38,15 @@ export function createContext(
   options: {
     agentsList?: ApplicationContext["agents"]["state"]["agentsList"];
     channelsSnapshot?: ChannelsStatusSnapshot | null;
+    recoveryScope?: string;
   } = {},
 ): ContextHarness {
-  const client = { request } as unknown as GatewayBrowserClient;
+  const client = {
+    request,
+    ...(options.recoveryScope
+      ? { recoveryScope: options.recoveryScope, recoveryScopeReady: true }
+      : {}),
+  } as unknown as GatewayBrowserClient;
   let snapshot: ApplicationGatewaySnapshot = {
     client,
     phase: "connected",

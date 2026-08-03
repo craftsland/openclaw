@@ -9392,15 +9392,19 @@ public struct SystemAgentChatResult: Codable, Sendable {
 
 public struct SystemAgentChatHistoryParams: Codable, Sendable {
     public let limit: Int?
+    public let sessionid: String?
 
     public init(
-        limit: Int? = nil)
+        limit: Int? = nil,
+        sessionid: String? = nil)
     {
         self.limit = limit
+        self.sessionid = sessionid
     }
 
     private enum CodingKeys: String, CodingKey {
         case limit
+        case sessionid = "sessionId"
     }
 }
 
@@ -9428,15 +9432,19 @@ public struct SystemAgentChatHistoryTurn: Codable, Sendable {
 
 public struct SystemAgentChatHistoryResult: Codable, Sendable {
     public let turns: [SystemAgentChatHistoryTurn]
+    public let activewizard: [String: AnyCodable]?
 
     public init(
-        turns: [SystemAgentChatHistoryTurn])
+        turns: [SystemAgentChatHistoryTurn],
+        activewizard: [String: AnyCodable]? = nil)
     {
         self.turns = turns
+        self.activewizard = activewizard
     }
 
     private enum CodingKeys: String, CodingKey {
         case turns
+        case activewizard = "activeWizard"
     }
 }
 
